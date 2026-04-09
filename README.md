@@ -1,3 +1,8 @@
+Які рішення прийняв і чому?
+
+1. Для запису й відтворення обрав Expo AV. Це вписується в стек Expo, не потребує зовнішніх сервісів і за розумний час дає повний цикл (слухаю - записую - відтворюю)
+2. Писклявий голос реалізовано через збільшення швидкості відтворення (rate) з shouldCorrectPitch: false - це дає класичний ефект вищого/швидшого голосу без окремого DSP-модуля
+
 # Welcome to your Expo app 👋
 
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).

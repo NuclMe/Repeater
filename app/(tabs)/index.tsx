@@ -1,10 +1,19 @@
-import { createElement } from 'react';
+import { useEffect, useRef, useState, type ComponentType } from 'react';
 import { SafeAreaView, StyleSheet, Text, View } from 'react-native';
 import Constants from 'expo-constants';
 
 import { useRepeaterController } from '@/hooks/use-repeater-controller';
 
 type RiveRuntime = typeof import('@rive-app/react-native') | null;
+type RiveController = {
+  awaitViewReady?: () => Promise<boolean>;
+  playIfNeeded?: () => void;
+  setBooleanInputValue?: (name: string, value: boolean, path?: string) => void;
+  setNumberInputValue?: (name: string, value: number, path?: string) => void;
+  triggerInput?: (name: string, path?: string) => void;
+};
+const CHARACTER_STATE_MACHINE = 'State Machine 1';
+const CHARACTER_ARTBOARD = 'Artboard';
 
 function getRiveRuntime(): RiveRuntime {
   // Expo Go cannot run Nitro modules used by @rive-app/react-native.
@@ -20,38 +29,113 @@ function getRiveRuntime(): RiveRuntime {
 }
 
 export default function HomeScreen() {
-  const { phase, error, levelDb } = useRepeaterController();
+  const { phase, error, levelDb, debugStep } = useRepeaterController();
   const riveRuntime = getRiveRuntime();
   const useRiveFile = riveRuntime?.useRiveFile;
   const Fit = riveRuntime?.Fit;
   const RiveView = riveRuntime?.RiveView;
+  const DynamicRiveView = RiveView as unknown as ComponentType<
+    Record<string, unknown>
+  >;
 
-  const { riveFile, error: riveLoadError } =
-    useRiveFile?.(require('../../assets/rive/character.riv')) ?? { riveFile: null, error: null };
+  const { riveFile, error: riveLoadError } = useRiveFile?.(
+    require('../../assets/rive/character.riv'),
+  ) ?? { riveFile: null, error: null };
 
   const meterPercent = Math.max(0, Math.min(1, (levelDb + 60) / 35));
   const fitContain = Fit?.Contain;
   const showRive = Boolean(riveRuntime && riveFile && RiveView && fitContain);
+  const riveRef = useRef<RiveController | null>(null);
+  const [riveBindGeneration, setRiveBindGeneration] = useState(0);
+  const prevPhaseRef = useRef<typeof phase | null>(null);
+
+  useEffect(() => {
+    if (!showRive || !riveRef.current) {
+      return;
+    }
+
+    const rive = riveRef.current;
+    void (async () => {
+      try {
+        await rive.awaitViewReady?.();
+      } catch {
+        // Keep trying on next phase/value update.
+      }
+
+      const isListening = phase === 'listening' || phase === 'recording';
+      const isRecording = phase === 'recording';
+      const isPlayback = phase === 'playback';
+      const isProblem = phase === 'error' || phase === 'denied';
+
+      const safe = (fn: () => void) => {
+        try {
+          fn();
+        } catch {
+          // Ignore unsupported input type/name mismatches for this frame.
+        }
+      };
+
+      safe(() => rive.setBooleanInputValue?.('Hear', isListening));
+      safe(() => rive.setBooleanInputValue?.('Talk', isPlayback));
+      safe(() => rive.setBooleanInputValue?.('Check', isRecording));
+      safe(() =>
+        rive.setNumberInputValue?.(
+          'Look',
+          isListening || isRecording ? meterPercent : 0,
+        ),
+      );
+
+      const prevPhase = prevPhaseRef.current;
+      if (phase !== prevPhase) {
+        if (isPlayback) {
+          safe(() => rive.triggerInput?.('success'));
+        } else if (isProblem) {
+          safe(() => rive.triggerInput?.('fail'));
+        }
+      }
+      safe(() => rive.playIfNeeded?.());
+      prevPhaseRef.current = phase;
+    })();
+  }, [showRive, phase, meterPercent, riveBindGeneration]);
 
   return (
     <SafeAreaView style={styles.screen}>
       <View style={[styles.characterContainer, phaseStyles[phase]]}>
         {showRive ? (
-          createElement(RiveView as never, {
-            file: riveFile,
-            fit: fitContain,
-            autoPlay: true,
-            style: styles.rive,
-            onError: (riveError: { message?: string }) =>
-              console.warn('Rive render error:', riveError?.message ?? 'unknown'),
-          })
+          <DynamicRiveView
+            file={riveFile}
+            artboardName={CHARACTER_ARTBOARD}
+            stateMachineName={CHARACTER_STATE_MACHINE}
+            fit={fitContain}
+            autoPlay
+            hybridRef={{
+              f: (instance: RiveController | null) => {
+                const prev = riveRef.current;
+                riveRef.current = instance;
+                if (instance && instance !== prev) {
+                  setRiveBindGeneration((n) => n + 1);
+                }
+              },
+            }}
+            style={styles.rive}
+            onError={(riveError: { message?: string }) =>
+              console.warn(
+                'Rive render error:',
+                riveError?.message ?? 'unknown',
+              )
+            }
+          />
         ) : (
           <View style={styles.placeholder}>
             <Text style={styles.placeholderText}>
-              {!riveRuntime ? 'Rive is unavailable in Expo Go' : 'Loading character...'}
+              {!riveRuntime
+                ? 'Rive is unavailable in Expo Go'
+                : 'Loading character...'}
             </Text>
             {!riveRuntime ? (
-              <Text style={styles.placeholderSubtext}>Run a Development Build (EAS) to show .riv.</Text>
+              <Text style={styles.placeholderSubtext}>
+                Run a Development Build (EAS) to show .riv.
+              </Text>
             ) : null}
           </View>
         )}
@@ -59,17 +143,32 @@ export default function HomeScreen() {
 
       <View style={styles.infoCard}>
         <Text style={styles.stateTitle}>{labelByPhase[phase]}</Text>
+        <Text style={styles.debugText}>phase: {phase}</Text>
+        <Text style={styles.debugText}>
+          mic level: {Math.round(levelDb)} dB
+        </Text>
+        <Text style={styles.debugText}>step: {debugStep}</Text>
         <View style={styles.meterTrack}>
-          <View style={[styles.meterFill, { transform: [{ scaleX: Math.max(0.04, meterPercent) }] }]} />
+          <View
+            style={[
+              styles.meterFill,
+              { transform: [{ scaleX: Math.max(0.04, meterPercent) }] },
+            ]}
+          />
         </View>
-        <Text style={styles.helperText}>Speak near microphone. Stop for ~1s to replay.</Text>
+        <Text style={styles.helperText}>
+          Speak near microphone. Stop for ~1s to replay.
+        </Text>
         {!riveRuntime ? (
           <Text style={styles.helperText}>
-            Rive disabled in Expo Go. Use EAS dev build to see character animation.
+            Rive disabled in Expo Go. Use EAS dev build to see character
+            animation.
           </Text>
         ) : null}
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
-        {riveLoadError ? <Text style={styles.errorText}>{riveLoadError.message}</Text> : null}
+        {riveLoadError ? (
+          <Text style={styles.errorText}>{riveLoadError.message}</Text>
+        ) : null}
       </View>
     </SafeAreaView>
   );
@@ -137,6 +236,11 @@ const styles = StyleSheet.create({
     color: '#B7C2D0',
     fontSize: 13,
   },
+  debugText: {
+    marginTop: 6,
+    color: '#8EA2BC',
+    fontSize: 12,
+  },
   errorText: {
     marginTop: 8,
     color: '#FF8686',
@@ -144,7 +248,10 @@ const styles = StyleSheet.create({
   },
 });
 
-const labelByPhase: Record<ReturnType<typeof useRepeaterController>['phase'], string> = {
+const labelByPhase: Record<
+  ReturnType<typeof useRepeaterController>['phase'],
+  string
+> = {
   idle: 'Idle',
   listening: 'Listening...',
   recording: 'Recording...',
@@ -153,7 +260,10 @@ const labelByPhase: Record<ReturnType<typeof useRepeaterController>['phase'], st
   error: 'Audio error',
 };
 
-const phaseStyles: Record<ReturnType<typeof useRepeaterController>['phase'], { borderColor: string }> = {
+const phaseStyles: Record<
+  ReturnType<typeof useRepeaterController>['phase'],
+  { borderColor: string }
+> = {
   idle: { borderColor: '#4C5D75' },
   listening: { borderColor: '#3D9BFF' },
   recording: { borderColor: '#46D98F' },
